@@ -41,7 +41,9 @@ class Service:
     def get_record(self, actor: Actor, record_id: int) -> Dict[str, Any]:
         actor = self._actor(actor)
         self._ensure_known_role(actor)
-        return self.repository.get(record_id)
+        record = self.repository.get(record_id)
+        record["deadline"] = self.rules.deadline_view(record["payload"])
+        return record
 
     def act(self, actor: Actor, record_id: int, expected_version: int, action: str, data: Dict[str, Any]) -> Dict[str, Any]:
         actor = self._actor(actor)
@@ -50,24 +52,65 @@ class Service:
         if not self.rules.role_can_action(actor.role, action):
             raise PermissionDenied("角色无权执行该操作")
         record = self.repository.get(record_id)
+        before = self.rules.deadline_view(record["payload"])
         self.rules.require_transition(record, action)
         new_state, new_payload, summary = self.rules.apply_action(record, action, data or {})
-        return self.repository.mutate(
+        after = self.rules.deadline_view(new_payload)
+        saved = self.repository.mutate(
             record_id=record_id,
             expected_version=int(expected_version),
             state=new_state,
             payload=new_payload,
             actor_id=actor.user_id,
             action=action,
-            details={"summary": summary, "input": data or {}, "from": record["state"], "to": new_state},
+            details={
+                "summary": summary,
+                "input": data or {},
+                "from": record["state"],
+                "to": new_state,
+                "deadline": {
+                    "original_deadline_day": after["original_deadline_day"],
+                    "current_deadline_day": after["current_deadline_day"],
+                    "clock_state": after["clock_state"],
+                    "days_remaining": after["days_remaining"],
+                    "total_tolled_days": after["total_tolled_days"],
+                    "deadline_moved_days": after["current_deadline_day"] - before["current_deadline_day"],
+                },
+            },
         )
+        saved["deadline"] = after
+        return saved
 
     def timeline(self, actor: Actor, record_id: int) -> List[Dict[str, Any]]:
         actor = self._actor(actor)
         self._ensure_known_role(actor)
         return self.audit.timeline(record_id)
 
-    def stats(self, actor: Actor) -> Dict[str, int]:
+    def stats(self, actor: Actor) -> Dict[str, Any]:
         actor = self._actor(actor)
         self._ensure_known_role(actor)
-        return self.repository.stats()
+        summary: Dict[str, Any] = {"by_state": self.repository.stats()}
+        paused = 0
+        overdue = 0
+        overdue_rfe = 0
+        total_tolled = 0
+        multi_pause = 0
+        for record in self.repository.list_records(limit=500):
+            view = self.rules.deadline_view(record["payload"])
+            if view["clock_state"] == "paused":
+                paused += 1
+            if record["state"] in {"submitted", "response_received", "evidence_requested"} and view["overdue"]:
+                overdue += 1
+            if any(seg.get("late") for seg in view["pauses"]):
+                overdue_rfe += 1
+            if view["pause_count"] > 1:
+                multi_pause += 1
+            total_tolled += view["total_tolled_days"]
+        summary.update({
+            "paused_for_evidence": paused,
+            "deadline_overdue": overdue,
+            "overdue_evidence_responses": overdue_rfe,
+            "multi_pause_cases": multi_pause,
+            "total_tolled_days": total_tolled,
+        })
+        return summary
