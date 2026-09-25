@@ -140,7 +140,20 @@ class Repository:
     def stats(self) -> Dict[str, int]:
         with self._connect() as connection:
             rows = connection.execute("SELECT state, COUNT(*) AS total FROM records GROUP BY state").fetchall()
-        return {str(row["state"]): int(row["total"]) for row in rows}
+            payloads = connection.execute("SELECT state, payload FROM records").fetchall()
+        result = {str(row["state"]): int(row["total"]) for row in rows}
+        active_states = {"draft", "submitted", "evidence_requested", "response_received"}
+        overdue = 0
+        paused_days = 0
+        for row in payloads:
+            payload = json.loads(row["payload"])
+            paused_days += int(payload.get("paused_days_total", 0))
+            if row["state"] in active_states and payload.get("overdue"):
+                overdue += 1
+        result["paused"] = result.get("evidence_requested", 0)
+        result["overdue"] = overdue
+        result["paused_days_total"] = paused_days
+        return result
 
     def health(self) -> bool:
         try:

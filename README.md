@@ -35,6 +35,14 @@ python3 app.py --db ./data.db --port 8329
 
 除`/health`和`/`外，请求需提供`X-User-Id`、`X-Role`，可选`X-Org`。
 
+## 补件暂停与期限顺延
+
+- 收案时固定原决定日`original_deadline_day`（= `received_day` + `deadline_days`）。
+- 发出补件通知（`request_evidence`）时记下暂停开始日`evidence_request_day`和补件截止日`evidence_due_day`，期限计时暂停；等待期间（`evidence_requested`状态）不能作出决定。
+- 收到补件（`respond`）后按实际等待天数顺延当前决定日`deadline_day`并继续计时；补件逾期时只顺延到截止日，逾期部分不顺延。
+- 支持多次补件（`response_received`可再次`request_evidence`），各段暂停记录在`pauses`列表，累计暂停天数见`paused_days_total`；统计接口额外返回`paused`、`overdue`、`paused_days_total`。
+- 期限数据存于SQLite，服务重启后原决定日、各段暂停与当前决定日仍可查回。
+
 ## 测试
 
 ```bash
